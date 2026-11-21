@@ -48,6 +48,7 @@ CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
 ROW_HEIGHT = 20
 HEAD_ROW = 3
 YEAR_W = 12
+CHECK_KEY = "保單年度8"
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -180,10 +181,13 @@ def parse_page(slug, body, grids, shared, ysubs, log):
                 continue
             if pre is None:
                 pre = clean(body[start:m.start()])
+            before = log["ambiguous"]
             label = classify(row[0], table_text, pre, log)
+            if log["ambiguous"] > before:
+                log["amb_rows"].append(f"{name[:24]}｜{row[0][:40]} → {label}")
             parts = re.split(r"\s+[–—\-－]\s+", row[0], maxsplit=1)
             cur, kind = (parts[0], parts[1]) if len(parts) == 2 else ("所有保單貨幣", parts[0])
-            cur = "所有" if cur.startswith("所有") else cur
+            cur = "所有" if cur.startswith("所有") else (re.sub(r"\s*保單貨幣$", "", cur).strip() or cur)
             kind = "" if label == TVR else (re.sub(r"\s*(之|的)?\s*分紅實現率", "", kind).strip() or "分紅")
             nums = {}
             for k, c in zip(keys, vals):
@@ -330,7 +334,7 @@ def write_sheet(ws, label, rows, ycols, ysubs, year, today):
     extras = [label, "當年平均值", "所有產品", "所有分红", "分紅類型", "平均值摘要 "]
     cols = [("产品名称", fit([r["name"] for r in rows] + ["产品名称"], 18, 46), "name"),
             ("产品种类", fit([r["cat"] for r in rows] + ["产品种类"], 12, 30), "cat"),
-            ("货币", fit([r["cur"] for r in rows] + ["货币"] + ([] if multi else extras), 12, 24), "cur")]
+            ("货币", fit([r["cur"] for r in rows] + ["货币"] + ([] if multi else extras), 10, 24), "cur")]
     if multi:
         cols.append(("红利类型", fit(kinds + ["红利类型"] + extras, 12, 26), "kind"))
     heads = [c[0] for c in cols] + [(k.replace("保單年度", "保单年度") + "\n" + ysubs.get(k, "")).strip() for k in ycols]
@@ -609,7 +613,8 @@ def main():
             count[sig] += 1
     data_pages = sum(1 for _, grids in pages.values() if grids)
     shared = {sig for sig, c in count.items() if data_pages >= 4 and c > data_pages / 2}
-    log = {"shared": 0, "ambiguous": 0, "used": collections.Counter(), "name_from": collections.Counter()}
+    log = {"shared": 0, "ambiguous": 0, "amb_rows": [], "used": collections.Counter(),
+           "name_from": collections.Counter()}
     ysubs, rows, empty = {}, [], []
     for s, (sub, grids) in pages.items():
         if not grids:
@@ -630,18 +635,22 @@ def main():
     print(f"報告年度 {year}｜頁面名稱 {len(slugs)} 個｜讀到 {len(pages)} 頁｜有表格 {data_pages} 頁｜讀取失敗 {len(missing)} 頁")
     print(f"每頁採用的數據表數目：{dict(sorted(log['used'].items()))}｜略過共用示例表 {log['shared']} 個"
           f"｜行名無法判斷類別 {log['ambiguous']} 行")
+    for s in log["amb_rows"][:10]:
+        print(f"    無法判斷的行：{s}")
     print(f"產品名稱來源：{dict(log['name_from'])}｜沒有數據的頁：{empty[:6]}")
     print(f"保單年度欄 {len(ycols)} 個：", "、".join(f"{k}（{ysubs.get(k, '')}）" for k in ycols))
-    print(f"產品種類：{dict(collections.Counter(r['cat'] or '—' for r in rows))}")
     for label, rs in sheets:
+        cells = " ".join(str(sum(1 for r in rs if isinstance(r["vals"].get(k), float))) for k in ycols)
         print(f"{label}：產品 {len(set(r['name'] for r in rs))} 個｜行數 {len(rs)}｜有數字格數 {len(numbers(rs))}")
         print(f"    貨幣 {dict(collections.Counter(r['cur'] for r in rs))}")
         print(f"    類型 {dict(collections.Counter(r['kind'] or '—' for r in rs))}")
+        print(f"    各年度數字格數：{cells}")
         print(f"    當年平均值：{show(averages(rs, ycols))}")
         print(f"    持滿平均值：{show(cumulative(rs, ycols))}")
-        for r in rs[:3]:
-            vals = " ".join(f"{v:.0%}" if isinstance(v, float) else "/" for v in (r["vals"].get(k, "/") for k in ycols))
-            print(f"    樣本：{r['name'][:24]}｜{r['cur']}｜{r['kind'] or '—'}｜{vals}")
+    check = [r for r in rows if r["label"] == FR and isinstance(r["vals"].get(CHECK_KEY), float)]
+    print(f"=== 分紅實現率 {CHECK_KEY}（{ysubs.get(CHECK_KEY, '')}）有數字的行：{len(check)} 行 ===")
+    for r in check:
+        print(f"  {r['vals'][CHECK_KEY]:.0%}｜{r['cur']}｜{r['kind']}｜{r['name'][:30]}")
 
     if not rows:
         print("完全讀不到資料，沒有產生 Excel")
